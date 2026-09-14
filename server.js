@@ -7,7 +7,13 @@ import webpush from 'web-push';
 
 const app = express();
 const server = http.createServer(app);
-const allowed = (process.env.FRONTEND_ORIGIN || '*').split(',').map(s => s.trim()).filter(Boolean);
+const configuredOrigins = (process.env.FRONTEND_ORIGIN || '').split(',').map(s => s.trim().replace(/\/$/, '')).filter(Boolean);
+// Keep the known EMMC Vercel origins allowed so a stale Render FRONTEND_ORIGIN
+// value cannot block the deployed police dashboard during the demo.
+const allowed = [...new Set([...configuredOrigins,
+  'https://emmc-maps-gps-police-alert.vercel.app',
+  'https://emms-maps-gps-module.vercel.app'
+])];
 app.use(cors({ origin: allowed.includes('*') ? true : allowed }));
 app.use(express.json({ limit: '100kb' }));
 const io = new Server(server, { cors: { origin: allowed.includes('*') ? '*' : allowed, methods: ['GET','POST'] } });
@@ -37,7 +43,7 @@ function inRange(a,b){return valid(a.latitude,a.longitude)&&valid(b.latitude,b.l
 
 async function pushToPolice(policeId, payload) {
   const sub = subscriptions.get(policeId);
-  if (!sub || !process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) return false;
+  if (!sub || !process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY || !process.env.VAPID_SUBJECT) return false;
   try {
     await webpush.sendNotification(sub, JSON.stringify(payload));
     return true;
@@ -48,8 +54,13 @@ async function pushToPolice(policeId, payload) {
   }
 }
 
-app.get('/api/health', (_req,res)=>res.json({ok:true, service:'EMMC Push Backend', pushConfigured:Boolean(process.env.VAPID_PUBLIC_KEY)}));
+app.get('/api/health', (_req,res)=>res.json({
+  ok:true,
+  service:'EMMC Push Backend',
+  pushConfigured:Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY && process.env.VAPID_SUBJECT)
+}));
 app.get('/api/traffic-police', (_req,res)=>{ const police=policeLocations.get('TP001') || null; res.json({ok:true, policeOnline:policeLocations.size, ambulancesOnline:ambulanceLocations.size, police: police ? {...police, isLive:true, lastUpdated:police.updatedAt} : null}); });
+app.get('/api/ambulances', (_req,res)=>res.json({ok:true, ambulancesOnline:ambulanceLocations.size, ambulances:[...ambulanceLocations.values()].map(amb=>({...amb, isLive:true, lastUpdated:amb.updatedAt}))}));
 app.get('/api/push/public-key', (_req,res)=>res.json({publicKey:process.env.VAPID_PUBLIC_KEY || ''}));
 
 app.post('/api/push/subscribe', (req,res)=>{
