@@ -8,33 +8,123 @@ import webpush from 'web-push';
 const app = express();
 const server = http.createServer(app);
 
+// --------------------------------------------------
+// CORS CONFIGURATION
+// --------------------------------------------------
+
 const configuredOrigins = (process.env.FRONTEND_ORIGIN || '')
   .split(',')
   .map(s => s.trim().replace(/\/$/, ''))
   .filter(Boolean);
 
-// Keep the known EMMC Vercel origins allowed so a stale Render
-// FRONTEND_ORIGIN value cannot block the deployed police dashboard.
+// All EMMC frontend origins
 const allowed = [...new Set([
   ...configuredOrigins,
+
+  // Current Police Vercel
   'https://emmc-maps-gps-police-alert.vercel.app',
-  'https://emms-maps-gps-module.vercel.app'
+
+  // Older Police Vercel
+  'https://emms-maps-gps-module.vercel.app',
+
+  // Current Ambulance Vercel
+  'https://emmc-ambulance-dashboard.vercel.app',
+
+  // Local development
+  'http://localhost:5173',
+  'http://localhost:5174'
 ])];
 
+console.log('Allowed frontend origins:', allowed);
+
+// Express CORS
 app.use(cors({
-  origin: allowed.includes('*') ? true : allowed
+  origin: (origin, callback) => {
+
+    // Allow requests without Origin header
+    // such as server-to-server requests
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowed.includes('*')) {
+      return callback(null, true);
+    }
+
+    if (allowed.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.warn(
+      'CORS blocked origin:',
+      origin
+    );
+
+    return callback(
+      new Error('Not allowed by CORS')
+    );
+  },
+
+  methods: [
+    'GET',
+    'POST',
+    'PUT',
+    'DELETE',
+    'OPTIONS'
+  ],
+
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization'
+  ]
 }));
 
 app.use(express.json({ limit: '100kb' }));
 
+// --------------------------------------------------
+// SOCKET.IO
+// --------------------------------------------------
+
 const io = new Server(server, {
   cors: {
-    origin: allowed.includes('*') ? '*' : allowed,
-    methods: ['GET', 'POST']
+    origin: (origin, callback) => {
+
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (allowed.includes('*')) {
+        return callback(null, true);
+      }
+
+      if (allowed.includes(origin)) {
+        return callback(null, true);
+      }
+
+      console.warn(
+        'Socket.IO CORS blocked origin:',
+        origin
+      );
+
+      return callback(
+        new Error('Not allowed by Socket.IO CORS')
+      );
+    },
+
+    methods: [
+      'GET',
+      'POST'
+    ]
   }
 });
 
-const PORT = Number(process.env.PORT || 3001);
+const PORT = Number(
+  process.env.PORT || 3001
+);
+
+// --------------------------------------------------
+// DATA STORAGE
+// --------------------------------------------------
 
 const policeLocations = new Map();
 const ambulanceLocations = new Map();
@@ -44,33 +134,58 @@ const activeAlerts = new Set();
 
 const RADIUS_KM = 1;
 
-// EMMC default ambulance information
-const DEFAULT_AMBULANCE_ID = 'AMB-1042';
-const DEFAULT_DESTINATION = 'Raj Hospital and Research Center, Ranchi';
-const DEFAULT_EMERGENCY_CATEGORY = 'Critical / High Priority';
+// --------------------------------------------------
+// EMMC DEFAULT AMBULANCE INFORMATION
+// --------------------------------------------------
+
+const DEFAULT_AMBULANCE_ID =
+  'AMB-1042';
+
+const DEFAULT_DESTINATION =
+  'Raj Hospital and Research Center, Ranchi';
+
+const DEFAULT_EMERGENCY_CATEGORY =
+  'Critical / High Priority';
+
+// --------------------------------------------------
+// VAPID / PUSH CONFIGURATION
+// --------------------------------------------------
 
 if (
   process.env.VAPID_PUBLIC_KEY &&
   process.env.VAPID_PRIVATE_KEY &&
   process.env.VAPID_SUBJECT
 ) {
+
   webpush.setVapidDetails(
     process.env.VAPID_SUBJECT,
     process.env.VAPID_PUBLIC_KEY,
     process.env.VAPID_PRIVATE_KEY
   );
+
 } else {
+
   console.warn(
     'VAPID keys are not configured. Push notifications are disabled until server/.env is configured.'
   );
 }
 
-function distanceKm(a, b) {
-  const R = 6371;
-  const rad = Math.PI / 180;
+// --------------------------------------------------
+// DISTANCE CALCULATION
+// --------------------------------------------------
 
-  const dLat = (b.latitude - a.latitude) * rad;
-  const dLng = (b.longitude - a.longitude) * rad;
+function distanceKm(a, b) {
+
+  const R = 6371;
+
+  const rad =
+    Math.PI / 180;
+
+  const dLat =
+    (b.latitude - a.latitude) * rad;
+
+  const dLng =
+    (b.longitude - a.longitude) * rad;
 
   const x =
     Math.sin(dLat / 2) ** 2 +
@@ -78,7 +193,11 @@ function distanceKm(a, b) {
       Math.cos(b.latitude * rad) *
       Math.sin(dLng / 2) ** 2;
 
-  const safeX = Math.min(1, Math.max(0, x));
+  const safeX =
+    Math.min(
+      1,
+      Math.max(0, x)
+    );
 
   return (
     R *
@@ -90,7 +209,12 @@ function distanceKm(a, b) {
   );
 }
 
+// --------------------------------------------------
+// VALID GPS
+// --------------------------------------------------
+
 function valid(lat, lng) {
+
   return (
     Number.isFinite(lat) &&
     Number.isFinite(lng) &&
@@ -101,16 +225,36 @@ function valid(lat, lng) {
   );
 }
 
+// --------------------------------------------------
+// RANGE CHECK
+// --------------------------------------------------
+
 function inRange(a, b) {
+
   return (
-    valid(a.latitude, a.longitude) &&
-    valid(b.latitude, b.longitude) &&
+    valid(
+      a.latitude,
+      a.longitude
+    ) &&
+    valid(
+      b.latitude,
+      b.longitude
+    ) &&
     distanceKm(a, b) <= RADIUS_KM
   );
 }
 
-async function pushToPolice(policeId, payload) {
-  const sub = subscriptions.get(policeId);
+// --------------------------------------------------
+// PUSH TO POLICE
+// --------------------------------------------------
+
+async function pushToPolice(
+  policeId,
+  payload
+) {
+
+  const sub =
+    subscriptions.get(policeId);
 
   if (
     !sub ||
@@ -122,15 +266,24 @@ async function pushToPolice(policeId, payload) {
   }
 
   try {
+
     await webpush.sendNotification(
       sub,
       JSON.stringify(payload)
     );
 
     return true;
+
   } catch (err) {
-    if (err.statusCode === 404 || err.statusCode === 410) {
-      subscriptions.delete(policeId);
+
+    if (
+      err.statusCode === 404 ||
+      err.statusCode === 410
+    ) {
+
+      subscriptions.delete(
+        policeId
+      );
     }
 
     console.error(
@@ -142,111 +295,156 @@ async function pushToPolice(policeId, payload) {
   }
 }
 
-// --------------------------------------------------
+// ==================================================
 // HEALTH
-// --------------------------------------------------
+// ==================================================
 
-app.get('/api/health', (_req, res) =>
-  res.json({
-    ok: true,
-    service: 'EMMC Push Backend',
-    pushConfigured: Boolean(
-      process.env.VAPID_PUBLIC_KEY &&
-      process.env.VAPID_PRIVATE_KEY &&
-      process.env.VAPID_SUBJECT
-    )
-  })
+app.get(
+  '/api/health',
+  (_req, res) =>
+    res.json({
+
+      ok: true,
+
+      service:
+        'EMMC Push Backend',
+
+      pushConfigured:
+        Boolean(
+          process.env.VAPID_PUBLIC_KEY &&
+          process.env.VAPID_PRIVATE_KEY &&
+          process.env.VAPID_SUBJECT
+        )
+    })
 );
 
-// --------------------------------------------------
+// ==================================================
 // TRAFFIC POLICE STATUS
-// --------------------------------------------------
+// ==================================================
 
-app.get('/api/traffic-police', (_req, res) => {
-  const police = policeLocations.get('TP001') || null;
+app.get(
+  '/api/traffic-police',
+  (_req, res) => {
 
-  res.json({
-    ok: true,
-    policeOnline: policeLocations.size,
-    ambulancesOnline: ambulanceLocations.size,
-    police: police
-      ? {
-          ...police,
-          isLive: true,
-          lastUpdated: police.updatedAt
-        }
-      : null
-  });
-});
+    const police =
+      policeLocations.get('TP001') ||
+      null;
 
-// --------------------------------------------------
-// AMBULANCE STATUS
-// --------------------------------------------------
+    res.json({
 
-app.get('/api/ambulances', (_req, res) =>
-  res.json({
-    ok: true,
-    ambulancesOnline: ambulanceLocations.size,
-    ambulances: [
-      ...ambulanceLocations.values()
-    ].map(amb => ({
-      ...amb,
-      isLive: true,
-      lastUpdated: amb.updatedAt
-    }))
-  })
-);
+      ok: true,
 
-// --------------------------------------------------
-// PUSH PUBLIC KEY
-// --------------------------------------------------
+      policeOnline:
+        policeLocations.size,
 
-app.get('/api/push/public-key', (_req, res) =>
-  res.json({
-    publicKey:
-      process.env.VAPID_PUBLIC_KEY || ''
-  })
-);
+      ambulancesOnline:
+        ambulanceLocations.size,
 
-// --------------------------------------------------
-// PUSH SUBSCRIPTION
-// --------------------------------------------------
-
-app.post('/api/push/subscribe', (req, res) => {
-  const {
-    policeId,
-    subscription
-  } = req.body || {};
-
-  if (
-    !policeId ||
-    !subscription?.endpoint
-  ) {
-    return res.status(400).json({
-      message:
-        'policeId and subscription are required'
+      police:
+        police
+          ? {
+              ...police,
+              isLive: true,
+              lastUpdated:
+                police.updatedAt
+            }
+          : null
     });
   }
+);
 
-  subscriptions.set(
-    policeId,
-    subscription
-  );
+// ==================================================
+// AMBULANCE STATUS
+// ==================================================
 
-  res.json({
-    ok: true,
-    message:
-      'Mobile push subscription saved'
-  });
-});
+app.get(
+  '/api/ambulances',
+  (_req, res) => {
 
-// --------------------------------------------------
+    res.json({
+
+      ok: true,
+
+      ambulancesOnline:
+        ambulanceLocations.size,
+
+      ambulances: [
+        ...ambulanceLocations.values()
+      ].map(amb => ({
+
+        ...amb,
+
+        isLive: true,
+
+        lastUpdated:
+          amb.updatedAt
+      }))
+    });
+  }
+);
+
+// ==================================================
+// PUSH PUBLIC KEY
+// ==================================================
+
+app.get(
+  '/api/push/public-key',
+  (_req, res) =>
+    res.json({
+
+      publicKey:
+        process.env.VAPID_PUBLIC_KEY || ''
+    })
+);
+
+// ==================================================
+// PUSH SUBSCRIPTION
+// ==================================================
+
+app.post(
+  '/api/push/subscribe',
+  (req, res) => {
+
+    const {
+      policeId,
+      subscription
+    } = req.body || {};
+
+    if (
+      !policeId ||
+      !subscription?.endpoint
+    ) {
+
+      return res.status(400).json({
+
+        message:
+          'policeId and subscription are required'
+      });
+    }
+
+    subscriptions.set(
+      policeId,
+      subscription
+    );
+
+    res.json({
+
+      ok: true,
+
+      message:
+        'Mobile push subscription saved'
+    });
+  }
+);
+
+// ==================================================
 // TRAFFIC POLICE REAL GPS
-// --------------------------------------------------
+// ==================================================
 
 app.post(
   '/api/traffic-police/location',
   async (req, res) => {
+
     const {
       policeId,
       latitude,
@@ -260,17 +458,26 @@ app.post(
         Number(longitude)
       )
     ) {
+
       return res.status(400).json({
+
         message:
           'Invalid police location'
       });
     }
 
     const p = {
+
       policeId,
-      latitude: Number(latitude),
-      longitude: Number(longitude),
-      updatedAt: Date.now()
+
+      latitude:
+        Number(latitude),
+
+      longitude:
+        Number(longitude),
+
+      updatedAt:
+        Date.now()
     };
 
     policeLocations.set(
@@ -278,6 +485,7 @@ app.post(
       p
     );
 
+    // Real police GPS
     io.emit(
       'policeLocation',
       p
@@ -288,23 +496,32 @@ app.post(
       p
     );
 
-    await checkProximityForPolice(p);
+    await checkProximityForPolice(
+      p
+    );
 
     res.json({
+
       ok: true,
+
       police: p
     });
   }
 );
 
-// --------------------------------------------------
+// ==================================================
 // CHECK AMBULANCE WITHIN 1 KM
-// --------------------------------------------------
+// ==================================================
 
-async function checkProximityForPolice(police) {
+async function checkProximityForPolice(
+  police
+) {
+
   for (
-    const amb of ambulanceLocations.values()
+    const amb of
+      ambulanceLocations.values()
   ) {
+
     if (
       !valid(
         Number(amb.latitude),
@@ -314,34 +531,51 @@ async function checkProximityForPolice(police) {
       continue;
     }
 
-    const d = distanceKm(
-      police,
-      amb
-    );
+    const d =
+      distanceKm(
+        police,
+        amb
+      );
 
     const key =
       `${police.policeId}:${amb.ambulanceId}`;
 
-    if (d <= RADIUS_KM) {
-      const now = Date.now();
+    // ----------------------------------------------
+    // WITHIN 1 KM
+    // ----------------------------------------------
 
-      // Send immediately on entering the 1 km zone,
-      // then at most once per minute while remaining inside.
+    if (d <= RADIUS_KM) {
+
+      const now =
+        Date.now();
+
+      // Send immediately when entering
+      // and maximum once per minute.
       if (
         !lastPush.has(key) ||
-        now - lastPush.get(key) > 60000
+        now -
+          lastPush.get(key) >
+          60000
       ) {
-        lastPush.set(key, now);
-        activeAlerts.add(key);
+
+        lastPush.set(
+          key,
+          now
+        );
+
+        activeAlerts.add(
+          key
+        );
 
         const distanceMeters =
-          Math.round(d * 1000);
+          Math.round(
+            d * 1000
+          );
 
         const emergencyCategory =
           amb.emergencyCategory ||
           DEFAULT_EMERGENCY_CATEGORY;
 
-        // FIXED DESTINATION
         const destination =
           amb.destination ||
           DEFAULT_DESTINATION;
@@ -350,8 +584,12 @@ async function checkProximityForPolice(police) {
           'Please clear traffic / remove the jam and give the ambulance a clear route.';
 
         const payload = {
-          policeId: police.policeId,
-          ambulanceId: amb.ambulanceId,
+
+          policeId:
+            police.policeId,
+
+          ambulanceId:
+            amb.ambulanceId,
 
           title:
             '🚨 TRAFFIC ALERT — AMBULANCE WITHIN 1 KM',
@@ -366,6 +604,7 @@ async function checkProximityForPolice(police) {
             `emmc-${amb.ambulanceId}`,
 
           data: {
+
             ambulanceId:
               amb.ambulanceId,
 
@@ -380,7 +619,6 @@ async function checkProximityForPolice(police) {
             longitude:
               amb.longitude,
 
-            // FIXED DESTINATION
             destination,
 
             emergencyCategory,
@@ -389,7 +627,10 @@ async function checkProximityForPolice(police) {
           }
         };
 
-        // In-app alert for authorized police dashboard
+        // ------------------------------------------
+        // IN-APP POLICE ALERT
+        // ------------------------------------------
+
         io.to(
           `police:${police.policeId}`
         ).emit(
@@ -397,7 +638,10 @@ async function checkProximityForPolice(police) {
           payload
         );
 
-        // Backward-compatible event
+        // ------------------------------------------
+        // BACKWARD COMPATIBILITY
+        // ------------------------------------------
+
         io.to(
           `police:${police.policeId}`
         ).emit(
@@ -405,19 +649,32 @@ async function checkProximityForPolice(police) {
           payload
         );
 
-        // Real mobile push
+        // ------------------------------------------
+        // REAL MOBILE PUSH
+        // ------------------------------------------
+
         await pushToPolice(
           police.policeId,
           payload
         );
       }
+
     } else {
-      if (activeAlerts.has(key)) {
+
+      // ------------------------------------------
+      // OUTSIDE 1 KM
+      // ------------------------------------------
+
+      if (
+        activeAlerts.has(key)
+      ) {
+
         io.to(
           `police:${police.policeId}`
         ).emit(
           'trafficPoliceAlertCleared',
           {
+
             policeId:
               police.policeId,
 
@@ -430,27 +687,34 @@ async function checkProximityForPolice(police) {
         );
       }
 
-      activeAlerts.delete(key);
-      lastPush.delete(key);
+      activeAlerts.delete(
+        key
+      );
+
+      lastPush.delete(
+        key
+      );
     }
   }
 }
 
-// --------------------------------------------------
+// ==================================================
 // AMBULANCE REAL GPS
-// --------------------------------------------------
+// ==================================================
 
 app.post(
   '/api/ambulance/location',
   async (req, res) => {
+
     const {
+
       ambulanceId =
         DEFAULT_AMBULANCE_ID,
 
       latitude,
+
       longitude,
 
-      // FIXED DEFAULT DESTINATION
       destination =
         DEFAULT_DESTINATION,
 
@@ -458,7 +722,12 @@ app.post(
         DEFAULT_EMERGENCY_CATEGORY,
 
       heading = null
+
     } = req.body || {};
+
+    // ----------------------------------------------
+    // VALIDATE GPS
+    // ----------------------------------------------
 
     if (
       !valid(
@@ -466,13 +735,18 @@ app.post(
         Number(longitude)
       )
     ) {
+
       return res.status(400).json({
+
         message:
           'Invalid ambulance location'
       });
     }
 
-    // Keep ambulance identity consistent
+    // ----------------------------------------------
+    // CLEAN AMBULANCE ID
+    // ----------------------------------------------
+
     const cleanAmbulanceId =
       String(
         ambulanceId ||
@@ -481,11 +755,19 @@ app.post(
         .trim()
         .toUpperCase();
 
+    // ----------------------------------------------
+    // CLEAN DESTINATION
+    // ----------------------------------------------
+
     const cleanDestination =
       String(
         destination ||
           DEFAULT_DESTINATION
       ).trim();
+
+    // ----------------------------------------------
+    // CLEAN EMERGENCY CATEGORY
+    // ----------------------------------------------
 
     const cleanEmergencyCategory =
       String(
@@ -493,7 +775,12 @@ app.post(
           DEFAULT_EMERGENCY_CATEGORY
       ).trim();
 
+    // ----------------------------------------------
+    // AMBULANCE DATA
+    // ----------------------------------------------
+
     const amb = {
+
       ambulanceId:
         cleanAmbulanceId,
 
@@ -515,59 +802,112 @@ app.post(
         Date.now()
     };
 
+    // ----------------------------------------------
+    // SAVE REAL AMBULANCE GPS
+    // ----------------------------------------------
+
     ambulanceLocations.set(
       cleanAmbulanceId,
       amb
     );
 
-    // Send real ambulance GPS to all connected clients
+    // ----------------------------------------------
+    // SEND REAL GPS TO CONNECTED CLIENTS
+    // ----------------------------------------------
+
     io.emit(
       'ambulanceLocation',
       amb
     );
 
-    // Re-check every connected police officer
-    // against this ambulance's real GPS.
+    // ----------------------------------------------
+    // CHECK ALL CONNECTED POLICE
+    // ----------------------------------------------
+
     for (
-      const police of policeLocations.values()
+      const police of
+        policeLocations.values()
     ) {
+
       await checkProximityForPolice(
         police
       );
     }
 
     res.json({
+
       ok: true,
-      ambulance: amb
+
+      ambulance:
+        amb
     });
   }
 );
 
-// --------------------------------------------------
-// SOCKET.IO
-// --------------------------------------------------
+// ==================================================
+// SOCKET.IO EVENTS
+// ==================================================
 
-io.on('connection', socket => {
-  socket.on(
-    'registerPolice',
-    ({ policeId } = {}) => {
-      if (policeId) {
-        socket.join(
-          `police:${policeId}`
+io.on(
+  'connection',
+  socket => {
+
+    console.log(
+      'Socket connected:',
+      socket.id
+    );
+
+    socket.on(
+      'registerPolice',
+      ({ policeId } = {}) => {
+
+        if (policeId) {
+
+          socket.join(
+            `police:${policeId}`
+          );
+
+          console.log(
+            `Police registered: ${policeId}`
+          );
+        }
+      }
+    );
+
+    socket.on(
+      'disconnect',
+      reason => {
+
+        console.log(
+          'Socket disconnected:',
+          socket.id,
+          reason
         );
       }
-    }
-  );
-});
+    );
+  }
+);
 
-// --------------------------------------------------
+// ==================================================
 // START SERVER
-// --------------------------------------------------
+// ==================================================
 
 server.listen(
   PORT,
-  () =>
+  () => {
+
     console.log(
       `EMMC backend listening on :${PORT}`
-    )
+    );
+
+    console.log(
+      'Ambulance Vercel allowed:',
+      'https://emmc-ambulance-dashboard.vercel.app'
+    );
+
+    console.log(
+      'Police Vercel allowed:',
+      'https://emmc-maps-gps-police-alert.vercel.app'
+    );
+  }
 );
