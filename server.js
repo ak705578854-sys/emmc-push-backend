@@ -17,7 +17,6 @@ const configuredOrigins = (process.env.FRONTEND_ORIGIN || '')
   .map(s => s.trim().replace(/\/$/, ''))
   .filter(Boolean);
 
-// All EMMC frontend origins
 const allowed = [...new Set([
   ...configuredOrigins,
 
@@ -40,12 +39,7 @@ console.log('Allowed frontend origins:', allowed);
 // Express CORS
 app.use(cors({
   origin: (origin, callback) => {
-
-    // Allow requests without Origin header
-    // such as server-to-server requests
-    if (!origin) {
-      return callback(null, true);
-    }
+    if (!origin) return callback(null, true);
 
     if (allowed.includes('*')) {
       return callback(null, true);
@@ -55,14 +49,8 @@ app.use(cors({
       return callback(null, true);
     }
 
-    console.warn(
-      'CORS blocked origin:',
-      origin
-    );
-
-    return callback(
-      new Error('Not allowed by CORS')
-    );
+    console.warn('CORS blocked origin:', origin);
+    return callback(new Error('Not allowed by CORS'));
   },
 
   methods: [
@@ -88,10 +76,7 @@ app.use(express.json({ limit: '100kb' }));
 const io = new Server(server, {
   cors: {
     origin: (origin, callback) => {
-
-      if (!origin) {
-        return callback(null, true);
-      }
+      if (!origin) return callback(null, true);
 
       if (allowed.includes('*')) {
         return callback(null, true);
@@ -101,14 +86,8 @@ const io = new Server(server, {
         return callback(null, true);
       }
 
-      console.warn(
-        'Socket.IO CORS blocked origin:',
-        origin
-      );
-
-      return callback(
-        new Error('Not allowed by Socket.IO CORS')
-      );
+      console.warn('Socket.IO CORS blocked origin:', origin);
+      return callback(new Error('Not allowed by Socket.IO CORS'));
     },
 
     methods: [
@@ -148,6 +127,35 @@ const DEFAULT_EMERGENCY_CATEGORY =
   'Critical / High Priority';
 
 // --------------------------------------------------
+// PRIORITY CONFIGURATION
+// --------------------------------------------------
+
+const PRIORITY_COLORS = {
+  red: '#dc2626',
+  orange: '#ea580c',
+  green: '#16a34a'
+};
+
+function normalizePriorityLevel(level) {
+  const value = String(level || 'red')
+    .trim()
+    .toLowerCase();
+
+  return Object.prototype.hasOwnProperty.call(
+    PRIORITY_COLORS,
+    value
+  )
+    ? value
+    : 'red';
+}
+
+function getPriorityColor(level) {
+  return PRIORITY_COLORS[
+    normalizePriorityLevel(level)
+  ];
+}
+
+// --------------------------------------------------
 // VAPID / PUSH CONFIGURATION
 // --------------------------------------------------
 
@@ -156,15 +164,12 @@ if (
   process.env.VAPID_PRIVATE_KEY &&
   process.env.VAPID_SUBJECT
 ) {
-
   webpush.setVapidDetails(
     process.env.VAPID_SUBJECT,
     process.env.VAPID_PUBLIC_KEY,
     process.env.VAPID_PRIVATE_KEY
   );
-
 } else {
-
   console.warn(
     'VAPID keys are not configured. Push notifications are disabled until server/.env is configured.'
   );
@@ -175,11 +180,8 @@ if (
 // --------------------------------------------------
 
 function distanceKm(a, b) {
-
   const R = 6371;
-
-  const rad =
-    Math.PI / 180;
+  const rad = Math.PI / 180;
 
   const dLat =
     (b.latitude - a.latitude) * rad;
@@ -214,7 +216,6 @@ function distanceKm(a, b) {
 // --------------------------------------------------
 
 function valid(lat, lng) {
-
   return (
     Number.isFinite(lat) &&
     Number.isFinite(lng) &&
@@ -230,7 +231,6 @@ function valid(lat, lng) {
 // --------------------------------------------------
 
 function inRange(a, b) {
-
   return (
     valid(
       a.latitude,
@@ -252,7 +252,6 @@ async function pushToPolice(
   policeId,
   payload
 ) {
-
   const sub =
     subscriptions.get(policeId);
 
@@ -266,24 +265,18 @@ async function pushToPolice(
   }
 
   try {
-
     await webpush.sendNotification(
       sub,
       JSON.stringify(payload)
     );
 
     return true;
-
   } catch (err) {
-
     if (
       err.statusCode === 404 ||
       err.statusCode === 410
     ) {
-
-      subscriptions.delete(
-        policeId
-      );
+      subscriptions.delete(policeId);
     }
 
     console.error(
@@ -303,12 +296,9 @@ app.get(
   '/api/health',
   (_req, res) =>
     res.json({
-
       ok: true,
-
       service:
         'EMMC Push Backend',
-
       pushConfigured:
         Boolean(
           process.env.VAPID_PUBLIC_KEY &&
@@ -325,21 +315,16 @@ app.get(
 app.get(
   '/api/traffic-police',
   (_req, res) => {
-
     const police =
       policeLocations.get('TP001') ||
       null;
 
     res.json({
-
       ok: true,
-
       policeOnline:
         policeLocations.size,
-
       ambulancesOnline:
         ambulanceLocations.size,
-
       police:
         police
           ? {
@@ -360,26 +345,101 @@ app.get(
 app.get(
   '/api/ambulances',
   (_req, res) => {
-
     res.json({
-
       ok: true,
-
       ambulancesOnline:
         ambulanceLocations.size,
 
       ambulances: [
         ...ambulanceLocations.values()
       ].map(amb => ({
-
         ...amb,
-
         isLive: true,
-
         lastUpdated:
           amb.updatedAt
       }))
     });
+  }
+);
+
+// ==================================================
+// ROAD ROUTE — OSRM PROXY
+// ==================================================
+
+app.get(
+  '/api/route',
+  async (req, res) => {
+    try {
+      const fromLat =
+        Number(req.query.fromLat);
+
+      const fromLng =
+        Number(req.query.fromLng);
+
+      const toLat =
+        Number(req.query.toLat);
+
+      const toLng =
+        Number(req.query.toLng);
+
+      if (
+        !valid(fromLat, fromLng) ||
+        !valid(toLat, toLng)
+      ) {
+        return res.status(400).json({
+          ok: false,
+          message:
+            'Invalid route coordinates'
+        });
+      }
+
+      const url =
+        `https://router.project-osrm.org/route/v1/driving/` +
+        `${fromLng},${fromLat};${toLng},${toLat}` +
+        `?overview=full&geometries=geojson`;
+
+      const response =
+        await fetch(url);
+
+      if (!response.ok) {
+        return res.status(502).json({
+          ok: false,
+          message:
+            `OSRM returned ${response.status}`
+        });
+      }
+
+      const data =
+        await response.json();
+
+      if (
+        data.code !== 'Ok' ||
+        !data.routes?.length
+      ) {
+        return res.status(404).json({
+          ok: false,
+          message:
+            'No road route found'
+        });
+      }
+
+      return res.json({
+        ok: true,
+        routes:
+          data.routes
+      });
+    } catch (error) {
+      console.error(
+        'OSRM route error:',
+        error.message
+      );
+
+      return res.status(500).json({
+        ok: false,
+        message:
+          'Route calculation failed'
+      });
+    }
   }
 );
 
@@ -391,7 +451,6 @@ app.get(
   '/api/push/public-key',
   (_req, res) =>
     res.json({
-
       publicKey:
         process.env.VAPID_PUBLIC_KEY || ''
     })
@@ -404,7 +463,6 @@ app.get(
 app.post(
   '/api/push/subscribe',
   (req, res) => {
-
     const {
       policeId,
       subscription
@@ -414,9 +472,7 @@ app.post(
       !policeId ||
       !subscription?.endpoint
     ) {
-
       return res.status(400).json({
-
         message:
           'policeId and subscription are required'
       });
@@ -428,9 +484,7 @@ app.post(
     );
 
     res.json({
-
       ok: true,
-
       message:
         'Mobile push subscription saved'
     });
@@ -444,7 +498,6 @@ app.post(
 app.post(
   '/api/traffic-police/location',
   async (req, res) => {
-
     const {
       policeId,
       latitude,
@@ -458,24 +511,18 @@ app.post(
         Number(longitude)
       )
     ) {
-
       return res.status(400).json({
-
         message:
           'Invalid police location'
       });
     }
 
     const p = {
-
       policeId,
-
       latitude:
         Number(latitude),
-
       longitude:
         Number(longitude),
-
       updatedAt:
         Date.now()
     };
@@ -501,9 +548,7 @@ app.post(
     );
 
     res.json({
-
       ok: true,
-
       police: p
     });
   }
@@ -516,12 +561,10 @@ app.post(
 async function checkProximityForPolice(
   police
 ) {
-
   for (
     const amb of
       ambulanceLocations.values()
   ) {
-
     if (
       !valid(
         Number(amb.latitude),
@@ -545,7 +588,6 @@ async function checkProximityForPolice(
     // ----------------------------------------------
 
     if (d <= RADIUS_KM) {
-
       const now =
         Date.now();
 
@@ -557,7 +599,6 @@ async function checkProximityForPolice(
           lastPush.get(key) >
           60000
       ) {
-
         lastPush.set(
           key,
           now
@@ -580,11 +621,21 @@ async function checkProximityForPolice(
           amb.destination ||
           DEFAULT_DESTINATION;
 
+        const priorityLevel =
+          normalizePriorityLevel(
+            amb.priorityLevel
+          );
+
+        const priorityColor =
+          amb.priorityColor ||
+          getPriorityColor(
+            priorityLevel
+          );
+
         const action =
           'Please clear traffic / remove the jam and give the ambulance a clear route.';
 
         const payload = {
-
           policeId:
             police.policeId,
 
@@ -595,7 +646,7 @@ async function checkProximityForPolice(
             '🚨 TRAFFIC ALERT — AMBULANCE WITHIN 1 KM',
 
           body:
-            `${amb.ambulanceId} is ${distanceMeters} m away. ${emergencyCategory}. ${action}`,
+            `${amb.ambulanceId} is ${distanceMeters} m away. ${emergencyCategory}. Priority: ${priorityLevel.toUpperCase()}. ${action}`,
 
           message:
             `🚑 Ambulance ${amb.ambulanceId} is within the 1 km Traffic Police radius. Please clear traffic / jam immediately and assist the ambulance.`,
@@ -604,7 +655,6 @@ async function checkProximityForPolice(
             `emmc-${amb.ambulanceId}`,
 
           data: {
-
             ambulanceId:
               amb.ambulanceId,
 
@@ -622,6 +672,10 @@ async function checkProximityForPolice(
             destination,
 
             emergencyCategory,
+
+            priorityLevel,
+
+            priorityColor,
 
             action
           }
@@ -658,9 +712,7 @@ async function checkProximityForPolice(
           payload
         );
       }
-
     } else {
-
       // ------------------------------------------
       // OUTSIDE 1 KM
       // ------------------------------------------
@@ -668,13 +720,11 @@ async function checkProximityForPolice(
       if (
         activeAlerts.has(key)
       ) {
-
         io.to(
           `police:${police.policeId}`
         ).emit(
           'trafficPoliceAlertCleared',
           {
-
             policeId:
               police.policeId,
 
@@ -705,9 +755,7 @@ async function checkProximityForPolice(
 app.post(
   '/api/ambulance/location',
   async (req, res) => {
-
     const {
-
       ambulanceId =
         DEFAULT_AMBULANCE_ID,
 
@@ -721,7 +769,13 @@ app.post(
       emergencyCategory =
         DEFAULT_EMERGENCY_CATEGORY,
 
-      heading = null
+      heading = null,
+
+      priorityLevel =
+        'red',
+
+      priorityColor =
+        null
 
     } = req.body || {};
 
@@ -735,9 +789,7 @@ app.post(
         Number(longitude)
       )
     ) {
-
       return res.status(400).json({
-
         message:
           'Invalid ambulance location'
       });
@@ -776,11 +828,26 @@ app.post(
       ).trim();
 
     // ----------------------------------------------
+    // CLEAN PRIORITY
+    // ----------------------------------------------
+
+    const normalizedPriorityLevel =
+      normalizePriorityLevel(
+        priorityLevel
+      );
+
+    // Always use server-approved
+    // color for synchronization.
+    const cleanPriorityColor =
+      getPriorityColor(
+        normalizedPriorityLevel
+      );
+
+    // ----------------------------------------------
     // AMBULANCE DATA
     // ----------------------------------------------
 
     const amb = {
-
       ambulanceId:
         cleanAmbulanceId,
 
@@ -797,6 +864,12 @@ app.post(
         cleanEmergencyCategory,
 
       heading,
+
+      priorityLevel:
+        normalizedPriorityLevel,
+
+      priorityColor:
+        cleanPriorityColor,
 
       updatedAt:
         Date.now()
@@ -828,16 +901,13 @@ app.post(
       const police of
         policeLocations.values()
     ) {
-
       await checkProximityForPolice(
         police
       );
     }
 
     res.json({
-
       ok: true,
-
       ambulance:
         amb
     });
@@ -851,7 +921,6 @@ app.post(
 io.on(
   'connection',
   socket => {
-
     console.log(
       'Socket connected:',
       socket.id
@@ -860,9 +929,7 @@ io.on(
     socket.on(
       'registerPolice',
       ({ policeId } = {}) => {
-
         if (policeId) {
-
           socket.join(
             `police:${policeId}`
           );
@@ -877,7 +944,6 @@ io.on(
     socket.on(
       'disconnect',
       reason => {
-
         console.log(
           'Socket disconnected:',
           socket.id,
@@ -895,7 +961,6 @@ io.on(
 server.listen(
   PORT,
   () => {
-
     console.log(
       `EMMC backend listening on :${PORT}`
     );
@@ -908,6 +973,16 @@ server.listen(
     console.log(
       'Police Vercel allowed:',
       'https://emmc-maps-gps-police-alert.vercel.app'
+    );
+
+    console.log(
+      'Route proxy:',
+      '/api/route'
+    );
+
+    console.log(
+      'Priority colors:',
+      PRIORITY_COLORS
     );
   }
 );
